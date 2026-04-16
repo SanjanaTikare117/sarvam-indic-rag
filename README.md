@@ -95,3 +95,8 @@ Retrieval accuracy: 5/5 = 100%
   <p align="center">
   <img src="https://github.com/user-attachments/assets/6e767460-0c59-4db5-8f0c-31b6407b4e88" width="800"/>
 </p>
+## 🎥 Live Demo
+
+📌 Indic RAG Pipeline (Hindi + Kannada + OCR + FAISS)
+
+👉 [Watch Demo Video](https://github.com/.../releases/download/v1.0/Sarvam-1.mp4)
