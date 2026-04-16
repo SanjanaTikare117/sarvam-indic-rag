@@ -2,38 +2,18 @@
 pipeline.py
 -----------
 Main RAG orchestration for the Sarvam Indic Document Understanding system.
-
-Ties together:
-  ingestion.py  →  embeddings.py  →  retriever.py  →  generator.py
-
-Usage:
-    from pipeline import IndicRAGPipeline
-
-    pipe = IndicRAGPipeline()
-    pipe.ingest(raw_docs=hindi_docs + kannada_docs)
-    result = pipe.query("भारत की राजधानी कहाँ है?")
-    print(result["answer"])
 """
 
 from pathlib import Path
 from typing import Optional
 
 from .ingestion import ingest_documents, detect_language
-from .embeddings import *
-from .retriever import *
-from .generator import * 
+from .embeddings import IndicEmbedder
+from .retriever import IndicRetriever
+from .generator import SarvamGenerator
 
 
 class IndicRAGPipeline:
-    """
-    Full RAG pipeline for Indic language documents.
-
-    Two modes:
-      1. With generator (full RAG): requires GPU + Sarvam-1 download
-      2. Retrieval-only (retrieval_only=True): fast, no LLM needed
-         useful for demos, evaluation, and low-resource environments
-    """
-
     def __init__(
         self,
         embed_model: str = "intfloat/multilingual-e5-base",
@@ -50,10 +30,9 @@ class IndicRAGPipeline:
         if not retrieval_only:
             self.generator = SarvamGenerator(model_name=sarvam_model)
 
-    # ------------------------------------------------------------------
-    # Ingestion
-    # ------------------------------------------------------------------
-
+    # ---------------------------
+    # INGEST
+    # ---------------------------
     def ingest(
         self,
         raw_docs: Optional[list[str]] = None,
@@ -61,10 +40,7 @@ class IndicRAGPipeline:
         chunk_size: int = 200,
         overlap: int = 40,
     ) -> int:
-        """
-        Ingest documents from raw strings and/or file paths.
-        Returns the number of chunks indexed.
-        """
+
         sources = []
         if raw_docs:
             sources.extend(raw_docs)
@@ -75,13 +51,19 @@ class IndicRAGPipeline:
             raise ValueError("Provide at least one of raw_docs or file_paths.")
 
         chunks = ingest_documents(sources, chunk_size=chunk_size, overlap=overlap)
+
+        # ✅ CRITICAL FIX (your previous crash)
+        if not chunks:
+            raise ValueError(
+                "No text extracted — likely scanned PDF without OCR or empty file."
+            )
+
         self.retriever.build(chunks)
         return len(chunks)
 
-    # ------------------------------------------------------------------
-    # Querying
-    # ------------------------------------------------------------------
-
+    # ---------------------------
+    # QUERY
+    # ---------------------------
     def query(
         self,
         question: str,
@@ -89,21 +71,14 @@ class IndicRAGPipeline:
         language_filter: Optional[str] = None,
         max_new_tokens: int = 200,
     ) -> dict:
-        """
-        Run the full RAG pipeline for a question.
 
-        Returns:
-            {
-                "question":  str,
-                "language":  str,          # detected query language
-                "retrieved": list[dict],   # top-k chunks
-                "answer":    str,          # generated answer (or "" if retrieval_only)
-                "context":   str,          # formatted context fed to LLM
-            }
-        """
         query_lang = detect_language(question)
-        # Map script detection output to prompt template keys
-        lang_map = {"hindi": "hindi", "kannada": "kannada", "english": "english"}
+
+        lang_map = {
+            "hindi": "hindi",
+            "kannada": "kannada",
+            "english": "english",
+        }
         prompt_lang = lang_map.get(query_lang, "hindi")
 
         retrieved = self.retriever.retrieve(
@@ -134,37 +109,26 @@ class IndicRAGPipeline:
             "context": context,
         }
 
-    # ------------------------------------------------------------------
-    # Persistence helpers
-    # ------------------------------------------------------------------
-
+    # ---------------------------
+    # SAVE / LOAD
+    # ---------------------------
     def save_index(self, directory: str | Path) -> None:
         self.retriever.save(directory)
 
     def load_index(self, directory: str | Path) -> None:
         self.retriever.load(directory)
 
-    # ------------------------------------------------------------------
-    # Evaluation helper
-    # ------------------------------------------------------------------
+    # ---------------------------
+    # EVAL
+    # ---------------------------
+    def evaluate_retrieval(self, eval_pairs: list[tuple[str, str]]) -> dict:
 
-    def evaluate_retrieval(
-        self, eval_pairs: list[tuple[str, str]]
-    ) -> dict:
-        """
-        Simple retrieval accuracy evaluation.
-
-        Args:
-            eval_pairs: list of (query, expected_language) tuples
-
-        Returns:
-            {accuracy: float, results: list[dict]}
-        """
         correct = 0
         results = []
 
         for query, expected_lang in eval_pairs:
             hits = self.retriever.retrieve(query, top_k=1)
+
             if not hits:
                 predicted_lang = "none"
                 score = 0.0
@@ -174,6 +138,7 @@ class IndicRAGPipeline:
 
             match = predicted_lang == expected_lang
             correct += int(match)
+
             results.append({
                 "query": query,
                 "expected": expected_lang,
@@ -183,7 +148,13 @@ class IndicRAGPipeline:
             })
 
         accuracy = correct / len(eval_pairs) if eval_pairs else 0.0
-        return {"accuracy": accuracy, "correct": correct, "total": len(eval_pairs), "results": results}
+
+        return {
+            "accuracy": accuracy,
+            "correct": correct,
+            "total": len(eval_pairs),
+            "results": results,
+        }
 
 
 # ------------------------------------------------------------------

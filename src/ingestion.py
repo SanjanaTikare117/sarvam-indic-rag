@@ -2,14 +2,25 @@
 ingestion.py
 ------------
 Document loading and chunking for Indic language documents.
-Handles plain text, PDF, and raw string inputs.
-Supports Hindi, Kannada, and other Indic scripts.
+Supports:
+- PDF (text + OCR fallback)
+- Images (OCR)
+- Plain text files
+- Raw strings
 """
 
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Union
 
+import pytesseract
+import cv2
+from pdf2image import convert_from_path
+
+# Set Tesseract path (IMPORTANT)
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+# Optional PDF support
 try:
     import PyPDF2
     PDF_SUPPORT = True
@@ -17,10 +28,74 @@ except ImportError:
     PDF_SUPPORT = False
 
 
-# --- Script detection ---
+
+# ============================================================
+# OCR FUNCTIONS
+# ============================================================
+
+def extract_text_from_image(image_path: str) -> str:
+    """Extract text from image using OCR."""
+    img = cv2.imread(image_path)
+
+    if img is None:
+        return ""
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)[1]
+
+    text = pytesseract.image_to_string(
+        gray,
+        lang="eng+hin+kan",
+        config="--oem 3 --psm 6"
+    )
+
+    return text.strip()
+
+def extract_text_from_pdf(path: str) -> str:
+    """
+    Extract text from PDF.
+    First tries normal extraction, then OCR fallback.
+    """
+    if not PDF_SUPPORT:
+        raise ImportError("Install PyPDF2 and pdf2image")
+
+    text = []
+
+    # ---- Try normal extraction ----
+    with open(path, "rb") as f:
+        reader = PyPDF2.PdfReader(f)
+        for page in reader.pages[:10]:
+            page_text = page.extract_text()
+            if page_text:
+                text.append(page_text)
+
+    full_text = "\n".join(text).strip()
+
+    if full_text:
+        return full_text
+
+    # ---- OCR fallback ----
+    print("⚠️ No text found in PDF, using OCR...")
+
+    images = convert_from_path(
+        path,
+        poppler_path=r"C:\Release-25.12.0-0\poppler-25.12.0\Library\bin"
+    )
+    ocr_text = []
+
+    for i, img in enumerate(images):
+        temp_path = f"temp_page_{i}.png"
+        img.save(temp_path, "PNG")
+        page_text = extract_text_from_image(temp_path)
+        ocr_text.append(page_text)
+
+    return "\n".join(ocr_text).strip()
+
+# LANGUAGE DETECTION
+# ============================================================
 
 SCRIPT_RANGES = {
-    "hindi":   (0x0900, 0x097F),   # Devanagari
+    "hindi":   (0x0900, 0x097F),
     "kannada": (0x0C80, 0x0CFF),
     "tamil":   (0x0B80, 0x0BFF),
     "telugu":  (0x0C00, 0x0C7F),
@@ -30,39 +105,30 @@ SCRIPT_RANGES = {
 
 
 def detect_language(text: str) -> str:
-    """Detect dominant script/language from Unicode ranges."""
     counts = {lang: 0 for lang in SCRIPT_RANGES}
+
     for ch in text:
         cp = ord(ch)
         for lang, (lo, hi) in SCRIPT_RANGES.items():
             if lo <= cp <= hi:
                 counts[lang] += 1
+
     dominant = max(counts, key=counts.get)
     return dominant if counts[dominant] > 0 else "unknown"
 
 
-# --- Sentence-aware chunking for Indic text ---
+# ============================================================
+# CHUNKING
+# ============================================================
 
-# Devanagari uses । (U+0964) as full stop; Kannada uses same.
-# We split on these + standard punctuation.
 INDIC_SENTENCE_ENDINGS = re.compile(r'(?<=[।॥\.\!\?])\s+')
 
 
-def chunk_text(
-    text: str,
-    chunk_size: int = 200,
-    overlap: int = 40,
-) -> list[str]:
-    """
-    Split text into overlapping chunks.
-    Tries to split on Indic/English sentence boundaries first,
-    then falls back to character-level chunking.
-    """
+def chunk_text(text: str, chunk_size: int = 200, overlap: int = 40) -> List[str]:
     text = text.strip()
     if not text:
         return []
 
-    # Split into sentences
     sentences = INDIC_SENTENCE_ENDINGS.split(text)
     sentences = [s.strip() for s in sentences if s.strip()]
 
@@ -75,13 +141,12 @@ def chunk_text(
         else:
             if current:
                 chunks.append(current.strip())
-            # Overlap: carry last `overlap` chars into next chunk
             current = current[-overlap:] + " " + sentence if overlap else sentence
 
     if current.strip():
         chunks.append(current.strip())
 
-    # If no sentence boundaries found, fall back to sliding window
+    # fallback
     if not chunks:
         for i in range(0, len(text), chunk_size - overlap):
             chunks.append(text[i:i + chunk_size])
@@ -89,92 +154,77 @@ def chunk_text(
     return chunks
 
 
-# --- Loaders ---
-
-def load_text_file(path: str | Path) -> str:
-    """Load a plain text file (UTF-8)."""
-    return Path(path).read_text(encoding="utf-8")
-
-
-def load_pdf(path: str | Path) -> str:
-    """Extract text from a PDF using PyPDF2."""
-    if not PDF_SUPPORT:
-        raise ImportError("PyPDF2 not installed. Run: pip install PyPDF2")
-    text = []
-    with open(path, "rb") as f:
-        reader = PyPDF2.PdfReader(f)
-        for page in reader.pages[:10]:
-            page_text = page.extract_text()
-            if page_text:
-                text.append(page_text)
-    return "\n".join(text)
-
-
-def load_raw_strings(docs: list[str]) -> list[str]:
-    """Pass-through for raw string lists (used in demo/testing)."""
-    return docs
-
-
-# --- Main ingestion pipeline ---
+# ============================================================
+# MAIN INGESTION
+# ============================================================
 
 def ingest_documents(
-    sources: list[str | Path],
+    sources: List[Union[str, Path]],
     chunk_size: int = 200,
     overlap: int = 40,
     language_override: Optional[str] = None,
-) -> list[dict]:
-    """
-    Load documents from file paths or raw strings.
-    Returns a list of chunk dicts:
-        {
-            "text": str,
-            "language": str,
-            "source": str,
-            "chunk_id": int,
-        }
-    """
+) -> List[dict]:
+
     records = []
     chunk_id = 0
 
     for source in sources:
-        # Determine if it's a file path or raw string
+
+        # ---------- FILE INPUT ----------
         if isinstance(source, Path) or (isinstance(source, str) and Path(source).exists()):
             path = Path(source)
-            if path.suffix.lower() == ".pdf":
-                raw_text = load_pdf(path)
+            suffix = path.suffix.lower()
+
+            if suffix == ".pdf":
+                raw_text = extract_text_from_pdf(str(path))
+
+            elif suffix in [".png", ".jpg", ".jpeg"]:
+                raw_text = extract_text_from_image(str(path))
+
             else:
-                raw_text = load_text_file(path)
+                raw_text = path.read_text(encoding="utf-8")
+
             source_name = path.name
+
+        # ---------- RAW STRING ----------
         else:
-            # Raw string
-            raw_text = source
+            raw_text = str(source)
             source_name = "raw"
 
-        chunks = chunk_text(raw_text, chunk_size=chunk_size, overlap=overlap)
+        # ---------- SAFETY ----------
+        if not raw_text.strip():
+            print(f"⚠️ Skipping empty document: {source_name}")
+            continue
+
+        # ---------- CHUNK ----------
+        chunks = chunk_text(raw_text, chunk_size, overlap)
 
         for chunk in chunks:
             lang = language_override or detect_language(chunk)
+
             records.append({
                 "text": chunk,
                 "language": lang,
                 "source": source_name,
                 "chunk_id": chunk_id,
             })
+
             chunk_id += 1
 
     return records
 
 
-# --- Quick sanity check ---
+# ============================================================
+# TEST
+# ============================================================
+
 if __name__ == "__main__":
-    sample_hindi = [
-        "भारत एक विविधताओं से भरा देश है। यहाँ अनेक भाषाएं, धर्म और संस्कृतियाँ एक साथ रहती हैं।",
-        "भारतीय संविधान 26 जनवरी 1950 को लागू हुआ था। यह दुनिया का सबसे बड़ा लिखित संविधान है।",
-    ]
-    sample_kannada = [
-        "ಕರ್ನಾಟಕ ದಕ್ಷಿಣ ಭಾರತದ ಒಂದು ರಾಜ್ಯ. ಇದರ ರಾಜಧಾನಿ ಬೆಂಗಳೂರು.",
+    docs = [
+        "भारत की राजधानी नई दिल्ली है।",
+        "ಕರ್ನಾಟಕದ ರಾಜಧಾನಿ ಬೆಂಗಳೂರು."
     ]
 
-    docs = ingest_documents(sample_hindi + sample_kannada)
-    for d in docs:
-        print(f"[{d['language']}] chunk_id={d['chunk_id']} | {d['text'][:60]}...")
+    result = ingest_documents(docs)
+
+    for r in result:
+        print(f"[{r['language']}] {r['text']}")
