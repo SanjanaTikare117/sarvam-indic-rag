@@ -21,7 +21,13 @@ pipeline.py         ← IndicRAGPipeline orchestrator
      │
      ▼
 app.py              ← FastAPI REST API
-
+## Roadmap
+- [x] Hindi + Kannada PDF ingestion
+- [x] OCR fallback for scanned image PDFs
+- [x] REST API with FastAPI
+- [ ] Tamil and Telugu PDF samples
+- [ ] Streaming API responses
+- [ ] Full generation mode with sarvam-1 on GPU
 Features
 Indic script detection — auto-detects Hindi, Kannada, Tamil, Telugu, Bengali, English
 Sentence-aware chunking — splits on । (Devanagari) and ॥ in addition to standard punctuation
@@ -29,7 +35,7 @@ PDF ingestion — upload PDFs via REST API, chunks and indexes automatically
 Cross-language retrieval — query in Hindi, retrieve relevant Kannada chunks and vice versa
 Retrieval-only mode — runs fast on CPU without needing the full LLM
 Retrieval evaluation — built-in accuracy scoring for retrieval quality
-
+- **OCR support** — scanned Kannada/Hindi image PDFs automatically fall back to Tesseract OCR (eng+hin+kan)
 Quick Start
 1. Install dependencies
 bashpip install -r requirements.txt
