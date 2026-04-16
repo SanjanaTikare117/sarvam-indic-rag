@@ -97,6 +97,6 @@ Retrieval accuracy: 5/5 = 100%
 </p>
 ## 🎥 Live Demo
 
-📌 Indic RAG Pipeline (Hindi + Kannada + OCR + FAISS)
+## ⚡ Quick Preview
 
-👉 [Watch Demo Video](https://github.com/.../releases/download/v1.0/Sarvam-1.mp4)
+![Demo](demo.gif)
